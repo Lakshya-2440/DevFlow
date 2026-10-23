@@ -26,6 +26,10 @@ export class HFService {
   private defaultModel = 'Qwen/Qwen2.5-Coder-32B-Instruct';
   private whisperModel = 'openai/whisper-large-v3-turbo';
 
+  private getGeminiKey(): string {
+    return process.env.GEMINI_API_KEY || '';
+  }
+
   async transcribeAudio(audioBuffer: Buffer, token?: string): Promise<string> {
     const hfToken = token || process.env.HF_TOKEN;
 
@@ -61,26 +65,89 @@ export class HFService {
     token?: string,
     modelName?: string
   ): Promise<GeneratedResponse> {
-    const hfToken = token || process.env.HF_TOKEN;
-    const selectedModel = modelName || this.defaultModel;
+    const geminiKey = this.getGeminiKey();
 
     const systemPrompt = `You are DevFlow, an elite AI developer cockpit engine.
-Turn user's natural language into exact terminal commands, git actions, or code snippets.
-Active Mode: ${mode}
-Workspace Context: ${workspaceContext || 'None'}
-Return ONLY valid JSON matching:
-{
-  "type": "terminal" | "code" | "standup",
-  "title": "Short title",
-  "summary": "1-2 sentence explanation",
-  "commands": [{ "command": "git ...", "explanation": "why", "safety": "safe"|"warning"|"destructive" }],
-  "code": { "filename": "path/file.ts", "language": "typescript", "diffOrSnippet": "code", "explanation": "why" },
-  "standupNotes": { "done": [], "next": [], "blockers": [] }
-}`;
+You turn spoken natural-language dev thoughts into precise, production-grade terminal commands, git actions, or code snippets.
 
-    // 1. Try Hugging Face Router API if token exists
+Active Mode: ${mode}
+Workspace Context:
+${workspaceContext || 'No active workspace context provided.'}
+
+RULES:
+1. Carefully analyze the user prompt and intent.
+2. Determine if user wants terminal/git commands, code diff/bug fix, or standup notes.
+3. ALWAYS return a valid JSON object matching this schema:
+{
+  "type": "terminal" | "code" | "standup" | "general",
+  "title": "Short descriptive title",
+  "summary": "1-2 sentence explanation",
+  "commands": [
+    {
+      "command": "exact bash command",
+      "explanation": "what it does",
+      "safety": "safe" | "warning" | "destructive"
+    }
+  ],
+  "code": {
+    "filename": "path/to/file.ext",
+    "language": "typescript",
+    "diffOrSnippet": "// code snippet or diff",
+    "explanation": "why this fixes or implements it"
+  },
+  "standupNotes": {
+    "done": ["item 1"],
+    "next": ["item 2"],
+    "blockers": ["none"]
+  }
+}
+4. For terminal commands, accurately set safety:
+   - "safe": read-only (status, checkout, pull, log, test)
+   - "warning": modifies state (commit, rebase, stash, push, npm install)
+   - "destructive": force overwrite or deletion (reset --hard, clean -fd, push --force)
+5. Return ONLY clean JSON.`;
+
+    // 1. Primary Engine: Real AI LLM via Gemini 2.5 Flash
+    if (geminiKey) {
+      try {
+        const geminiRes = await axios.post(
+          `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${geminiKey}`,
+          {
+            generationConfig: {
+              responseMimeType: 'application/json',
+              temperature: 0.2,
+            },
+            contents: [
+              {
+                role: 'user',
+                parts: [
+                  {
+                    text: `${systemPrompt}\n\nUSER PROMPT: "${prompt}"`,
+                  },
+                ],
+              },
+            ],
+          },
+          {
+            headers: { 'Content-Type': 'application/json' },
+            timeout: 25000,
+          }
+        );
+
+        const rawJson = geminiRes.data?.candidates?.[0]?.content?.parts?.[0]?.text;
+        if (rawJson) {
+          return JSON.parse(rawJson.trim());
+        }
+      } catch (geminiError: any) {
+        console.warn('Gemini LLM call failed, trying backup:', geminiError.response?.data || geminiError.message);
+      }
+    }
+
+    // 2. Secondary Engine: Hugging Face Router API (if user has credits)
+    const hfToken = token || process.env.HF_TOKEN;
     if (hfToken) {
       try {
+        const selectedModel = modelName || this.defaultModel;
         const response = await axios.post(
           'https://router.huggingface.co/v1/chat/completions',
           {
@@ -111,11 +178,11 @@ Return ONLY valid JSON matching:
           return JSON.parse(cleanJson.trim());
         }
       } catch (error: any) {
-        console.warn('HF Router unavailable, using DevFlow Semantic Engine:', error.message);
+        console.warn('HF Router unavailable:', error.message);
       }
     }
 
-    // 2. High-precision semantic developer synthesizer
+    // 3. Fallback Engine: Local Semantic Synthesizer (Zero-crash guarantee)
     return this.synthesizeLocalDevFlow(prompt, mode, workspaceContext);
   }
 
@@ -127,7 +194,7 @@ Return ONLY valid JSON matching:
       .slice(0, 30);
   }
 
-  // Production-grade semantic developer synthesizer
+  // Fallback if all external networks are completely offline
   private synthesizeLocalDevFlow(
     prompt: string,
     mode: 'auto' | 'terminal' | 'code' | 'standup',
@@ -136,35 +203,31 @@ Return ONLY valid JSON matching:
     const lower = prompt.toLowerCase();
 
     // Intent: Standup
-    if (mode === 'standup' || lower.includes('standup') || lower.includes('slack note')) {
+    if (mode === 'standup' || lower.includes('standup') || lower.includes('slack')) {
       return {
         type: 'standup',
         title: 'Daily Engineering Standup Notes',
         summary: 'Synthesized git workspace changes and progress into clean Slack standup bullets.',
         standupNotes: {
           done: [
-            'Configured Render backend deployment and environment variables',
-            'Integrated official Wispr Flow MCP connector endpoint',
-            'Built push-to-talk audio visualizer in developer cockpit',
+            'Integrated Gemini 2.5 Flash LLM intelligence into DevFlow',
+            'Configured Wispr Flow MCP connector endpoint',
+            'Tested live voice transcription and command execution',
           ],
           next: [
             'Test end-to-end voice transcription in staging environment',
-            'Record 2-minute hackathon demo video for judges',
+            'Record hackathon submission video for judges',
           ],
           blockers: ['None at the moment'],
         },
       };
     }
 
-    // Intent: Branching & Branch Creation
-    // (e.g., "I need to push this branch, make a new branch", "create branch feat/login", etc.)
+    // Intent: Branching
     if (
-      lower.includes('new branch') ||
-      lower.includes('make a branch') ||
-      lower.includes('create a branch') ||
-      lower.includes('create branch') ||
-      lower.includes('make a new branch') ||
-      (lower.includes('branch') && (lower.includes('push') || lower.includes('make') || lower.includes('create') || lower.includes('switch')))
+      lower.includes('branch') ||
+      lower.includes('checkout') ||
+      lower.includes('make a branch')
     ) {
       const explicitBranchMatch = prompt.match(/(?:branch|checkout|switch to)\s+([a-zA-Z0-9_\-\/]+)/i);
       let branchName = explicitBranchMatch && !['this', 'a', 'new', 'the'].includes(explicitBranchMatch[1].toLowerCase())
@@ -199,7 +262,7 @@ Return ONLY valid JSON matching:
       };
     }
 
-    // Intent: Git Push / Force Push
+    // Intent: Git Push
     if (lower.includes('push')) {
       const isForce = lower.includes('force') || lower.includes('lease');
       const pushCmd = isForce ? 'git push --force-with-lease origin HEAD' : 'git push -u origin HEAD';
@@ -207,211 +270,23 @@ Return ONLY valid JSON matching:
         type: 'terminal',
         title: isForce ? 'Safe Force Push (With Lease)' : 'Push Current Branch to Remote',
         summary: isForce
-          ? 'Pushes HEAD commits with remote lease verification, preventing unintended overwriting of peer commits.'
+          ? 'Pushes HEAD commits with remote lease verification.'
           : 'Pushes current local branch to origin and sets upstream tracking.',
         commands: [
-          {
-            command: 'git status',
-            explanation: 'Inspect active branch and uncommitted modifications',
-            safety: 'safe',
-          },
-          {
-            command: pushCmd,
-            explanation: 'Pushes local commits to remote origin',
-            safety: isForce ? 'destructive' : 'warning',
-          },
+          { command: 'git status', explanation: 'Inspect active branch and uncommitted modifications', safety: 'safe' },
+          { command: pushCmd, explanation: 'Pushes local commits to remote origin', safety: isForce ? 'destructive' : 'warning' },
         ],
       };
     }
 
-    // Intent: Git Rebase
-    if (lower.includes('rebase')) {
-      const targetBranch = lower.includes('staging') ? 'staging' : 'main';
-      return {
-        type: 'terminal',
-        title: `Interactive Rebase on Origin/${targetBranch}`,
-        summary: `Synchronizes current branch commits cleanly on top of origin/${targetBranch} and pushes with lease.`,
-        commands: [
-          {
-            command: `git fetch origin ${targetBranch}`,
-            explanation: `Fetches latest commits from remote ${targetBranch} without altering working tree`,
-            safety: 'safe',
-          },
-          {
-            command: `git rebase origin/${targetBranch}`,
-            explanation: `Replays current branch commits on top of origin/${targetBranch}`,
-            safety: 'warning',
-          },
-          {
-            command: 'git push --force-with-lease origin HEAD',
-            explanation: 'Safely updates remote branch with rebased history',
-            safety: 'warning',
-          },
-        ],
-      };
-    }
-
-    // Intent: Git Stash & Sync
-    if (lower.includes('stash') || lower.includes('pull')) {
-      if (lower.includes('stash')) {
-        return {
-          type: 'terminal',
-          title: 'Git Stash & Pull Sync Chain',
-          summary: 'Temporarily shelves dirty working tree files, pulls latest remote changes, and reapplies stash.',
-          commands: [
-            { command: 'git stash save "DevFlow auto-stash"', explanation: 'Stashes uncommitted changes into stash stack', safety: 'safe' },
-            { command: 'git pull origin HEAD', explanation: 'Pulls latest upstream commits', safety: 'warning' },
-            { command: 'git stash pop', explanation: 'Reapplies stashed changes back onto working tree', safety: 'warning' },
-          ],
-        };
-      }
-      return {
-        type: 'terminal',
-        title: 'Pull Latest Remote Commits',
-        summary: 'Pulls and fast-forwards commits from the upstream tracking branch.',
-        commands: [
-          { command: 'git pull origin HEAD', explanation: 'Fetches and merges latest commits into current branch', safety: 'warning' },
-        ],
-      };
-    }
-
-    // Intent: Git Commit & Add
-    if (lower.includes('commit') || lower.includes('save changes')) {
-      const msgMatch = prompt.match(/(?:message|msg|m)\s+["']?([^"']+)["']?/i);
-      const commitMsg = msgMatch ? msgMatch[1] : 'feat: ' + prompt.replace(/commit|add|all|changes/gi, '').trim();
-      return {
-        type: 'terminal',
-        title: 'Stage & Commit Changes',
-        summary: `Stages all working tree modifications and writes commit: "${commitMsg}".`,
-        commands: [
-          { command: 'git add .', explanation: 'Stages all modified, created, and deleted files', safety: 'safe' },
-          { command: `git commit -m "${commitMsg || 'feat: update code'}"`, explanation: 'Records staged changes into repository history', safety: 'warning' },
-        ],
-      };
-    }
-
-    // Intent: Git Discard / Reset / Clean
-    if (lower.includes('discard') || lower.includes('clean') || lower.includes('undo') || lower.includes('reset')) {
-      if (lower.includes('hard') || lower.includes('all changes')) {
-        return {
-          type: 'terminal',
-          title: 'Discard All Workspace Modifications',
-          summary: 'Completely restores working tree to match HEAD and removes all untracked files.',
-          commands: [
-            { command: 'git restore .', explanation: 'Discards uncommitted changes in tracked files', safety: 'destructive' },
-            { command: 'git clean -fd', explanation: 'Removes untracked files and directories', safety: 'destructive' },
-          ],
-        };
-      }
-      return {
-        type: 'terminal',
-        title: 'Undo Last Commit (Keep Files)',
-        summary: 'Rolls back the most recent commit into the staging area without losing any code.',
-        commands: [
-          { command: 'git reset --soft HEAD~1', explanation: 'Undoes last commit while keeping files staged', safety: 'warning' },
-          { command: 'git status', explanation: 'Inspect unstaged and staged files', safety: 'safe' },
-        ],
-      };
-    }
-
-    // Intent: GitHub PR
-    if (lower.includes('pr') || lower.includes('pull request')) {
-      return {
-        type: 'terminal',
-        title: 'Create GitHub Pull Request',
-        summary: 'Pushes active branch to GitHub and opens a Pull Request using GitHub CLI.',
-        commands: [
-          { command: 'git push -u origin HEAD', explanation: 'Pushes current branch commits to origin', safety: 'warning' },
-          { command: 'gh pr create --fill --web', explanation: 'Opens browser with auto-filled title and commit summaries', safety: 'safe' },
-        ],
-      };
-    }
-
-    // Intent: Package Management (npm / yarn / pnpm)
-    if (lower.includes('install') || lower.includes('npm') || lower.includes('package') || lower.includes('add dep')) {
-      const pkgMatch = prompt.match(/(?:install|add)\s+([a-zA-Z0-9_\-@\/]+)/i);
-      const pkg = pkgMatch && !['the', 'a', 'package', 'dependency'].includes(pkgMatch[1].toLowerCase()) ? pkgMatch[1] : '';
-      return {
-        type: 'terminal',
-        title: `Package Manager: ${pkg ? 'Install ' + pkg : 'Install Dependencies'}`,
-        summary: pkg ? `Installs ${pkg} into node_modules and adds it to package.json.` : 'Installs all dependencies listed in package.json.',
-        commands: [
-          {
-            command: pkg ? `npm install ${pkg}` : 'npm install',
-            explanation: pkg ? `Adds ${pkg} to dependencies` : 'Resolves dependencies from package-lock.json',
-            safety: 'warning',
-          },
-        ],
-      };
-    }
-
-    // Intent: Code / Bugfix
-    if (
-      mode === 'code' ||
-      lower.includes('cors') ||
-      lower.includes('multer') ||
-      lower.includes('fix') ||
-      lower.includes('docker') ||
-      lower.includes('component') ||
-      lower.includes('function')
-    ) {
-      if (lower.includes('cors') || lower.includes('multer') || lower.includes('buffer')) {
-        return {
-          type: 'code',
-          title: 'Fix CORS & Bump Audio Multer Buffer (25MB)',
-          summary: 'Configured CORS preflight headers and increased Multer memory storage limit to 25MB for high-fidelity audio streams.',
-          code: {
-            filename: 'server/src/routes/voice.ts',
-            language: 'typescript',
-            diffOrSnippet: `import multer from 'multer';\nimport cors from 'cors';\n\n// 25MB buffer configuration for audio voice streaming\nexport const upload = multer({\n  storage: multer.memoryStorage(),\n  limits: {\n    fileSize: 25 * 1024 * 1024, // 25MB max audio buffer\n  },\n});\n\n// Handle CORS preflight\napp.use(cors({\n  origin: '*',\n  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],\n  allowedHeaders: ['Content-Type', 'Authorization', 'x-hf-token'],\n}));`,
-            explanation: 'Fixes HTTP 413 Payload Too Large and preflight 405 errors by allowing up to 25MB audio buffers and permissive CORS headers.',
-          },
-        };
-      }
-
-      if (lower.includes('docker')) {
-        return {
-          type: 'code',
-          title: 'Docker Compose Stack (PostgreSQL, Redis, Node)',
-          summary: 'Multi-container orchestration setup with volume mounts, environment secrets, and healthcheck dependencies.',
-          code: {
-            filename: 'docker-compose.yml',
-            language: 'yaml',
-            diffOrSnippet: `version: '3.8'\n\nservices:\n  postgres:\n    image: postgres:16-alpine\n    environment:\n      POSTGRES_DB: devflow\n      POSTGRES_PASSWORD: \${DB_PASSWORD:-postgres}\n    ports:\n      - "5432:5432"\n    volumes:\n      - pgdata:/var/lib/postgresql/data\n\n  redis:\n    image: redis:7-alpine\n    ports:\n      - "6379:6379"\n\n  api:\n    build: ./server\n    ports:\n      - "3001:3001"\n    depends_on:\n      - postgres\n      - redis\n    environment:\n      - NODE_ENV=production\n      - DATABASE_URL=postgres://postgres:\${DB_PASSWORD}@postgres:5432/devflow\n\nvolumes:\n  pgdata:`,
-            explanation: 'Provides a production-grade docker-compose configuration with isolated networking and persistent data volumes.',
-          },
-        };
-      }
-
-      return {
-        type: 'code',
-        title: 'Synthesized Code Solution',
-        summary: `Generated code patch addressing: "${prompt}"`,
-        code: {
-          filename: 'src/solution.ts',
-          language: 'typescript',
-          diffOrSnippet: `// Solution for: ${prompt}\nexport async function handleDevAction() {\n  try {\n    console.log('[DevFlow] Executed action successfully');\n    return { success: true };\n  } catch (error) {\n    console.error('[DevFlow Error]:', error);\n    throw error;\n  }\n}`,
-          explanation: 'Wrapped in error-boundary try/catch with proper typing.',
-        },
-      };
-    }
-
-    // Default: Git Status & Branch inspection
+    // Default Terminal
     return {
       type: 'terminal',
-      title: 'Inspect Workspace & Branch Status',
-      summary: `Workspace diagnostic commands for: "${prompt}"`,
+      title: 'Synthesized Terminal Execution',
+      summary: `Workspace commands for: "${prompt}"`,
       commands: [
-        {
-          command: 'git status',
-          explanation: 'Inspect active branch, uncommitted modifications, and untracked files',
-          safety: 'safe',
-        },
-        {
-          command: 'git branch --show-current',
-          explanation: 'Prints the name of the active working branch',
-          safety: 'safe',
-        },
+        { command: 'git status', explanation: 'Inspect active branch and uncommitted modifications', safety: 'safe' },
+        { command: 'git log --oneline -n 5', explanation: 'View latest 5 commits', safety: 'safe' },
       ],
     };
   }
