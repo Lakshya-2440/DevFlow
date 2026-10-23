@@ -161,7 +161,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, o
             type="text"
             value={backendUrl}
             onChange={(e) => setBackendUrl(e.target.value)}
-            placeholder="https://devflow-backend.onrender.com (empty for localhost/proxy)"
+            placeholder="https://devflow-backend-lonx.onrender.com"
             style={{
               padding: '10px 14px',
               borderRadius: '8px',

@@ -41,7 +41,12 @@ export interface ExecutionResult {
 }
 
 const getApiBase = (): string => {
-  return localStorage.getItem('devflow_backend_url') || '';
+  const custom = localStorage.getItem('devflow_backend_url');
+  if (custom) return custom;
+  if (typeof window !== 'undefined' && window.location.hostname === 'localhost') {
+    return '';
+  }
+  return 'https://devflow-backend-lonx.onrender.com';
 };
 
 const getHfToken = (): string => {
